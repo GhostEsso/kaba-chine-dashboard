@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Filter, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Filter, RefreshCw, Check, X, Clock, Truck, Package, Archive } from 'lucide-react';
 import DataTable from '../components/ui/DataTable';
 import StatusBadge from '../components/ui/StatusBadge';
 import { DeliveryStatus, DeliveryMethod, PaymentStatus } from '../data/mockData';
@@ -10,32 +10,67 @@ import { fetchDeliveries, adaptDeliveryData, DeliveryFilters } from '../services
 
 const Deliveries: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [filters, setFilters] = useState<DeliveryFilters>({});
   const [showFilters, setShowFilters] = useState(false);
   const [deliveries, setDeliveries] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [statusCounts, setStatusCounts] = useState({
+    pending: 0,
+    accepted: 0,
+    collected: 0,
+    inTransit: 0,
+    delivered: 0,
+    cancelled: 0,
+  });
+  
+  // Initialiser les filtres depuis les paramètres d'URL
+  useEffect(() => {
+    const queryParams = new URLSearchParams(location.search);
+    const statusParam = queryParams.get('status');
+    
+    if (statusParam) {
+      setFilters(prev => ({
+        ...prev,
+        status: statusParam as DeliveryStatus
+      }));
+    }
+  }, [location.search]);
+  
+  const loadDeliveries = useCallback(async () => {
+    setLoading(true);
+    try {
+      const apiDeliveries = await fetchDeliveries(filters);
+      const adaptedDeliveries = apiDeliveries.map(adaptDeliveryData);
+      setDeliveries(adaptedDeliveries);
+      
+      // Calculer les compteurs par statut
+      const counts = {
+        pending: apiDeliveries.filter(d => d.currentStatus === 'PENDING').length,
+        accepted: apiDeliveries.filter(d => d.currentStatus === 'ACCEPTED').length,
+        collected: apiDeliveries.filter(d => d.currentStatus === 'COLLECTED').length,
+        inTransit: apiDeliveries.filter(d => 
+          d.currentStatus === 'IN_TRANSIT' || d.currentStatus === 'SHIPPING'
+        ).length,
+        delivered: apiDeliveries.filter(d => d.currentStatus === 'DELIVERED').length,
+        cancelled: apiDeliveries.filter(d => d.currentStatus === 'CANCELLED').length,
+      };
+      setStatusCounts(counts);
+      
+      setError(null);
+    } catch (err: any) {
+      setError(`Erreur: ${err.message || "Erreur inconnue lors de la récupération des livraisons"}`);
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
   
   useEffect(() => {
     console.log("État actuel des filtres:", filters);
-    
-    const getDeliveriesData = async () => {
-      setLoading(true);
-      try {
-        const apiDeliveries = await fetchDeliveries(filters);
-        const adaptedDeliveries = apiDeliveries.map(adaptDeliveryData);
-        setDeliveries(adaptedDeliveries);
-        setError(null);
-      } catch (err: any) {
-        setError(`Erreur: ${err.message || "Erreur inconnue lors de la récupération des livraisons"}`);
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    
-    getDeliveriesData();
-  }, [filters]);
+    loadDeliveries();
+  }, [filters, loadDeliveries]);
   
   const handleStatusFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value as DeliveryStatus | '';
@@ -43,6 +78,27 @@ const Deliveries: React.FC = () => {
       ...prev,
       status: value === '' ? undefined : value
     }));
+    
+    // Mettre à jour l'URL
+    if (value) {
+      navigate(`/deliveries?status=${value}`, { replace: true });
+    } else {
+      navigate('/deliveries', { replace: true });
+    }
+  };
+  
+  const setStatusFilter = (status: DeliveryStatus | undefined) => {
+    setFilters(prev => ({
+      ...prev,
+      status
+    }));
+    
+    // Mettre à jour l'URL
+    if (status) {
+      navigate(`/deliveries?status=${status}`, { replace: true });
+    } else {
+      navigate('/deliveries', { replace: true });
+    }
   };
   
   const handlePaymentStatusFilterChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -64,6 +120,7 @@ const Deliveries: React.FC = () => {
   
   const resetFilters = () => {
     setFilters({});
+    navigate('/deliveries', { replace: true });
   };
   
   const columns = [
@@ -107,7 +164,7 @@ const Deliveries: React.FC = () => {
           Gestion des livraisons
         </h2>
         
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button 
             onClick={() => setShowFilters(!showFilters)}
             className="btn btn-outline flex items-center space-x-2"
@@ -130,9 +187,144 @@ const Deliveries: React.FC = () => {
         </div>
       </div>
       
+      {/* Filtres rapides par statut */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 md:grid-cols-5 gap-3">
+        {/* En attente */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'pending' ? undefined : 'pending')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'pending' 
+            ? 'bg-amber-100 border-amber-300' 
+            : 'bg-white hover:bg-amber-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'pending' ? 'bg-amber-200' : 'bg-amber-100'
+            }`}>
+              <Clock size={16} className="text-amber-600" />
+            </div>
+            <span className="font-medium">En attente</span>
+          </div>
+          <span className="text-lg font-bold text-amber-600">
+            {statusCounts.pending}
+          </span>
+        </button>
+        
+        {/* Acceptées */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'accepted' ? undefined : 'accepted')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'accepted' 
+            ? 'bg-blue-100 border-blue-300' 
+            : 'bg-white hover:bg-blue-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'accepted' ? 'bg-blue-200' : 'bg-blue-100'
+            }`}>
+              <Check size={16} className="text-blue-600" />
+            </div>
+            <span className="font-medium">Acceptées</span>
+          </div>
+          <span className="text-lg font-bold text-blue-600">
+            {statusCounts.accepted}
+          </span>
+        </button>
+        
+        {/* Collectées */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'collected' ? undefined : 'collected')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'collected' 
+            ? 'bg-lime-100 border-lime-300' 
+            : 'bg-white hover:bg-lime-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'collected' ? 'bg-lime-200' : 'bg-lime-100'
+            }`}>
+              <Archive size={16} className="text-lime-600" />
+            </div>
+            <span className="font-medium">Collectées</span>
+          </div>
+          <span className="text-lg font-bold text-lime-600">
+            {statusCounts.collected}
+          </span>
+        </button>
+        
+        {/* En transit */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'in-transit' ? undefined : 'in-transit')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'in-transit' 
+            ? 'bg-indigo-100 border-indigo-300' 
+            : 'bg-white hover:bg-indigo-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'in-transit' ? 'bg-indigo-200' : 'bg-indigo-100'
+            }`}>
+              <Truck size={16} className="text-indigo-600" />
+            </div>
+            <span className="font-medium">En transit</span>
+          </div>
+          <span className="text-lg font-bold text-indigo-600">
+            {statusCounts.inTransit}
+          </span>
+        </button>
+        
+        {/* Livrées */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'delivered' ? undefined : 'delivered')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'delivered' 
+            ? 'bg-green-100 border-green-300' 
+            : 'bg-white hover:bg-green-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'delivered' ? 'bg-green-200' : 'bg-green-100'
+            }`}>
+              <Package size={16} className="text-green-600" />
+            </div>
+            <span className="font-medium">Livrées</span>
+          </div>
+          <span className="text-lg font-bold text-green-600">
+            {statusCounts.delivered}
+          </span>
+        </button>
+        
+        {/* Annulées */}
+        <button 
+          onClick={() => setStatusFilter(filters.status === 'cancelled' ? undefined : 'cancelled')}
+          className={`flex items-center justify-between p-3 border rounded-lg transition-colors ${
+            filters.status === 'cancelled' 
+            ? 'bg-red-100 border-red-300' 
+            : 'bg-white hover:bg-red-50'
+          }`}
+        >
+          <div className="flex items-center">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mr-2 ${
+              filters.status === 'cancelled' ? 'bg-red-200' : 'bg-red-100'
+            }`}>
+              <X size={16} className="text-red-600" />
+            </div>
+            <span className="font-medium">Refusées</span>
+          </div>
+          <span className="text-lg font-bold text-red-600">
+            {statusCounts.cancelled}
+          </span>
+        </button>
+      </div>
+      
       {showFilters && (
         <div className="card animate-slide-in">
-          <h3 className="font-medium mb-4">Filtres</h3>
+          <h3 className="font-medium mb-4">Filtres avancés</h3>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -147,6 +339,7 @@ const Deliveries: React.FC = () => {
                 <option value="">Tous les statuts</option>
                 <option value="pending">En attente</option>
                 <option value="accepted">Accepté</option>
+                <option value="collected">Collecté</option>
                 <option value="in-transit">En transit</option>
                 <option value="delivered">Livré</option>
                 <option value="cancelled">Annulé</option>
@@ -197,14 +390,28 @@ const Deliveries: React.FC = () => {
         ) : error ? (
           <div className="p-4 text-center text-red-600">{error}</div>
         ) : deliveries.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">Aucune livraison trouvée</div>
+          <div className="p-8 text-center text-gray-500">
+            {filters.status ? (
+              <>
+                <p className="mb-2">Aucune livraison trouvée avec le statut sélectionné.</p>
+                <button 
+                  onClick={resetFilters}
+                  className="text-primary-600 hover:underline"
+                >
+                  Voir toutes les livraisons
+                </button>
+              </>
+            ) : (
+              "Aucune livraison trouvée"
+            )}
+          </div>
         ) : (
-        <DataTable 
-          data={deliveries}
-          columns={columns}
-          keyExtractor={(item) => item.id}
-          onRowClick={(delivery) => navigate(`/deliveries/${delivery.id}`)}
-        />
+          <DataTable
+            columns={columns}
+            data={deliveries}
+            keyExtractor={(item) => item.id}
+            onRowClick={(row) => navigate(`/deliveries/${row.id}`)}
+          />
         )}
       </div>
     </div>

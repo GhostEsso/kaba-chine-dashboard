@@ -4,42 +4,146 @@ import {
   MapPin, 
   Package, 
   Search, 
-  UserPlus,
   AlertTriangle 
 } from 'lucide-react';
 import DataTable from '../components/ui/DataTable';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { fetchClients, ApiClient } from '../services/api';
+import { fetchClients, ApiClient, fetchAddresses, ApiAddress } from '../services/api';
+
+// Interfaces pour les filtres
+interface ClientFilters {
+  deliveryCount?: string;
+  deliveryPreference?: string;
+  registrationDate?: string;
+}
+
+// Interface pour les filtres d'adresses
+interface AddressFilters {
+  country?: string;
+  city?: string;
+  isDefault?: string;
+}
+
+// Interface étendue pour l'affichage des adresses
+interface DisplayAddress extends ApiAddress {
+  isDefault: boolean; // Forcé à être défini pour l'affichage
+  label?: string;     // Étiquette pour l'affichage
+}
 
 const Clients: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'users' | 'addresses'>('users');
   const [showFilters, setShowFilters] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [clients, setClients] = useState<ApiClient[]>([]);
+  const [addresses, setAddresses] = useState<DisplayAddress[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showPendingOnly, setShowPendingOnly] = useState(false);
+  const [filters, setFilters] = useState<ClientFilters>({
+    deliveryCount: 'all',
+    deliveryPreference: 'all',
+    registrationDate: 'all'
+  });
+  const [addressFilters, setAddressFilters] = useState<AddressFilters>({
+    country: 'all',
+    city: 'all',
+    isDefault: 'all'
+  });
+  
+  // Fonction pour enrichir les adresses avec des informations supplémentaires
+  const enhanceAddresses = (apiAddresses: ApiAddress[]): DisplayAddress[] => {
+    // Grouper les adresses par utilisateur
+    const userAddresses = apiAddresses.reduce((groups, addr) => {
+      if (!groups[addr.kabaUserId]) {
+        groups[addr.kabaUserId] = [];
+      }
+      groups[addr.kabaUserId].push(addr);
+      return groups;
+    }, {} as Record<string, ApiAddress[]>);
+    
+    // Enrichir chaque adresse avec des informations d'affichage
+    return apiAddresses.map((addr, index, array) => {
+      const userAddrs = userAddresses[addr.kabaUserId] || [];
+      // La première adresse de l'utilisateur est considérée comme par défaut
+      const isDefault = userAddrs.indexOf(addr) === 0;
+      
+      return {
+        ...addr,
+        isDefault,
+        label: isDefault ? 'Adresse principale' : `Adresse secondaire ${userAddrs.indexOf(addr)}`
+      };
+    });
+  };
   
   useEffect(() => {
-    const loadClients = async () => {
+    const loadData = async () => {
       setLoading(true);
       try {
-        const apiClients = await fetchClients();
+        // Récupérer les clients et les adresses en parallèle
+        const [apiClients, apiAddresses] = await Promise.all([
+          fetchClients(),
+          fetchAddresses()
+        ]);
+        
         setClients(apiClients);
+        
+        // Enrichir les adresses pour l'affichage
+        const enhancedAddresses = enhanceAddresses(apiAddresses);
+        setAddresses(enhancedAddresses);
+        
         setError(null);
       } catch (err) {
-        console.error('Erreur lors du chargement des clients:', err);
-        setError("Impossible de charger les données des clients");
+        console.error('Erreur lors du chargement des données:', err);
+        setError("Impossible de charger les données");
       } finally {
         setLoading(false);
       }
     };
     
-    loadClients();
+    loadData();
   }, []);
   
-  // Filter clients by search term and pending status
+  // Fonction pour appliquer les filtres
+  const applyFilters = () => {
+    setShowFilters(false);
+  };
+  
+  // Fonction pour réinitialiser les filtres
+  const resetFilters = () => {
+    if (activeTab === 'users') {
+      setFilters({
+        deliveryCount: 'all',
+        deliveryPreference: 'all',
+        registrationDate: 'all'
+      });
+    } else {
+      setAddressFilters({
+        country: 'all',
+        city: 'all',
+        isDefault: 'all'
+      });
+    }
+    setShowFilters(false);
+  };
+  
+  // Gestionnaire de changement pour les filtres des clients
+  const handleFilterChange = (filterName: keyof ClientFilters, value: string) => {
+    setFilters(prevFilters => ({
+      ...prevFilters,
+      [filterName]: value
+    }));
+  };
+  
+  // Gestionnaire de changement pour les filtres des adresses
+  const handleAddressFilterChange = (filterName: keyof AddressFilters, value: string) => {
+    setAddressFilters(prevFilters => ({
+      ...prevFilters,
+      [filterName]: value
+    }));
+  };
+  
+  // Filter clients by search term, pending status and other filters
   const filteredClients = clients.filter(client => {
     // Filtrer par terme de recherche
     const matchesSearch = 
@@ -50,7 +154,86 @@ const Clients: React.FC = () => {
     // Filtrer par statut "En attente" si l'option est activée
     const matchesPending = !showPendingOnly || client.pendingDeliveryCount > 0;
     
-    return matchesSearch && matchesPending;
+    // Filtrer par nombre de livraisons
+    let matchesDeliveryCount = true;
+    if (filters.deliveryCount !== 'all') {
+      switch (filters.deliveryCount) {
+        case 'none':
+          matchesDeliveryCount = client.deliveryCount === 0;
+          break;
+        case '1-5':
+          matchesDeliveryCount = client.deliveryCount >= 1 && client.deliveryCount <= 5;
+          break;
+        case '6-10':
+          matchesDeliveryCount = client.deliveryCount >= 6 && client.deliveryCount <= 10;
+          break;
+        case 'more10':
+          matchesDeliveryCount = client.deliveryCount > 10;
+          break;
+      }
+    }
+    
+    // Filtrer par préférence de livraison
+    let matchesPreference = true;
+    if (filters.deliveryPreference !== 'all') {
+      matchesPreference = (filters.deliveryPreference === 'home') === client.preferHomeDelivery;
+    }
+    
+    // Filtrer par date d'inscription (utiliser la date de dernière livraison comme approximation)
+    let matchesDate = true;
+    if (filters.registrationDate !== 'all' && client.lastDeliveryDate) {
+      const now = new Date();
+      const lastDate = client.lastDeliveryDate;
+      
+      switch (filters.registrationDate) {
+        case 'thisMonth':
+          matchesDate = lastDate.getMonth() === now.getMonth() && lastDate.getFullYear() === now.getFullYear();
+          break;
+        case 'lastMonth': {
+          const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1);
+          matchesDate = lastDate.getMonth() === lastMonth.getMonth() && lastDate.getFullYear() === lastMonth.getFullYear();
+          break;
+        }
+        case 'thisYear':
+          matchesDate = lastDate.getFullYear() === now.getFullYear();
+          break;
+      }
+    }
+    
+    return matchesSearch && matchesPending && matchesDeliveryCount && matchesPreference && matchesDate;
+  });
+  
+  // Filtre des adresses
+  const filteredAddresses = addresses.filter(address => {
+    // Filtrer par terme de recherche
+    const client = clients.find(c => c.id === address.kabaUserId);
+    const clientName = client ? client.name : '';
+    
+    const matchesSearch = 
+      clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      address.street.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      address.city.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      address.region.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    // Filtrer par région (équivalent du pays)
+    let matchesCountry = true;
+    if (addressFilters.country !== 'all') {
+      matchesCountry = address.region === addressFilters.country;
+    }
+    
+    // Filtrer par ville
+    let matchesCity = true;
+    if (addressFilters.city !== 'all') {
+      matchesCity = address.city === addressFilters.city;
+    }
+    
+    // Filtrer par adresse par défaut
+    let matchesDefault = true;
+    if (addressFilters.isDefault !== 'all') {
+      matchesDefault = address.isDefault === (addressFilters.isDefault === 'yes');
+    }
+    
+    return matchesSearch && matchesCountry && matchesCity && matchesDefault;
   });
   
   // Clients columns
@@ -115,15 +298,20 @@ const Clients: React.FC = () => {
     }
   ];
 
-  // Addresses columns (ne sera pas utilisé dans cette version car nous n'avons pas encore les adresses des clients)
+  // Addresses columns
   const addressColumns = [
     {
       header: 'Client',
-      accessor: (address: any) => {
-        const client = clients.find(c => c.id === address.clientId);
+      accessor: (address: DisplayAddress) => {
+        const client = clients.find(c => c.id === address.kabaUserId);
         return client ? client.name : 'N/A';
       },
       className: 'font-medium'
+    },
+    {
+      header: 'Étiquette',
+      accessor: 'label',
+      className: 'text-sm'
     },
     {
       header: 'Adresse',
@@ -135,20 +323,35 @@ const Clients: React.FC = () => {
     },
     {
       header: 'Code postal',
-      accessor: 'postalCode'
+      accessor: 'postalCode',
+      className: 'text-sm'
     },
     {
-      header: 'Pays',
-      accessor: 'country'
+      header: 'Pays/Région',
+      accessor: 'region'
     },
     {
       header: 'Par défaut',
-      accessor: (address: any) => 
+      accessor: (address: DisplayAddress) => 
         address.isDefault 
           ? <span className="text-success-600">Oui</span>
           : <span className="text-gray-600">Non</span>,
+    },
+    {
+      header: 'Actions',
+      accessor: (address: DisplayAddress) => (
+        <div className="flex space-x-2">
+          <button className="p-1 rounded hover:bg-gray-100" title="Voir détails">
+            <MapPin size={16} className="text-primary-600" />
+          </button>
+        </div>
+      )
     }
   ];
+
+  // Obtenir les régions et villes uniques pour les filtres
+  const uniqueRegions = Array.from(new Set(addresses.map(a => a.region)));
+  const uniqueCities = Array.from(new Set(addresses.map(a => a.city)));
 
   if (loading) {
     return (
@@ -188,11 +391,6 @@ const Clients: React.FC = () => {
           >
             <Filter size={16} />
             <span>Filtres</span>
-          </button>
-          
-          <button className="btn btn-primary flex items-center space-x-2">
-            <UserPlus size={16} />
-            <span>Nouveau client</span>
           </button>
         </div>
       </div>
@@ -258,12 +456,16 @@ const Clients: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Nombre de livraisons
                 </label>
-                <select className="select">
-                  <option>Toutes</option>
-                  <option>Aucune (0)</option>
-                  <option>1-5 livraisons</option>
-                  <option>6-10 livraisons</option>
-                  <option>Plus de 10</option>
+                <select 
+                  className="select"
+                  value={filters.deliveryCount}
+                  onChange={(e) => handleFilterChange('deliveryCount', e.target.value)}
+                >
+                  <option value="all">Toutes</option>
+                  <option value="none">Aucune (0)</option>
+                  <option value="1-5">1-5 livraisons</option>
+                  <option value="6-10">6-10 livraisons</option>
+                  <option value="more10">Plus de 10</option>
                 </select>
               </div>
               
@@ -271,10 +473,14 @@ const Clients: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Préférence de livraison
                 </label>
-                <select className="select">
-                  <option>Toutes</option>
-                  <option>À domicile</option>
-                  <option>Standard</option>
+                <select 
+                  className="select"
+                  value={filters.deliveryPreference}
+                  onChange={(e) => handleFilterChange('deliveryPreference', e.target.value)}
+                >
+                  <option value="all">Toutes</option>
+                  <option value="home">À domicile</option>
+                  <option value="standard">Standard</option>
                 </select>
               </div>
               
@@ -282,11 +488,15 @@ const Clients: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Date d'inscription
                 </label>
-                <select className="select">
-                  <option>Toutes les dates</option>
-                  <option>Ce mois</option>
-                  <option>Dernier mois</option>
-                  <option>Cette année</option>
+                <select 
+                  className="select"
+                  value={filters.registrationDate}
+                  onChange={(e) => handleFilterChange('registrationDate', e.target.value)}
+                >
+                  <option value="all">Toutes les dates</option>
+                  <option value="thisMonth">Ce mois</option>
+                  <option value="lastMonth">Dernier mois</option>
+                  <option value="thisYear">Cette année</option>
                 </select>
               </div>
             </div>
@@ -294,15 +504,17 @@ const Clients: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Pays
+                  Pays/Région
                 </label>
-                <select className="select">
-                  <option>Tous</option>
-                  <option>Sénégal</option>
-                  <option>Mali</option>
-                  <option>Côte d'Ivoire</option>
-                  <option>Guinée</option>
-                  <option>Burkina Faso</option>
+                <select 
+                  className="select"
+                  value={addressFilters.country}
+                  onChange={(e) => handleAddressFilterChange('country', e.target.value)}
+                >
+                  <option value="all">Tous</option>
+                  {uniqueRegions.map(region => (
+                    <option key={region} value={region}>{region}</option>
+                  ))}
                 </select>
               </div>
               
@@ -310,13 +522,15 @@ const Clients: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Ville
                 </label>
-                <select className="select">
-                  <option>Toutes</option>
-                  <option>Dakar</option>
-                  <option>Bamako</option>
-                  <option>Abidjan</option>
-                  <option>Conakry</option>
-                  <option>Ouagadougou</option>
+                <select 
+                  className="select"
+                  value={addressFilters.city}
+                  onChange={(e) => handleAddressFilterChange('city', e.target.value)}
+                >
+                  <option value="all">Toutes</option>
+                  {uniqueCities.map(city => (
+                    <option key={city} value={city}>{city}</option>
+                  ))}
                 </select>
               </div>
               
@@ -324,10 +538,14 @@ const Clients: React.FC = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Adresse par défaut
                 </label>
-                <select className="select">
-                  <option>Toutes</option>
-                  <option>Oui</option>
-                  <option>Non</option>
+                <select 
+                  className="select"
+                  value={addressFilters.isDefault}
+                  onChange={(e) => handleAddressFilterChange('isDefault', e.target.value)}
+                >
+                  <option value="all">Toutes</option>
+                  <option value="yes">Oui</option>
+                  <option value="no">Non</option>
                 </select>
               </div>
             </div>
@@ -335,12 +553,15 @@ const Clients: React.FC = () => {
           
           <div className="mt-4 flex justify-end">
             <button 
-              onClick={() => setShowFilters(false)}
+              onClick={resetFilters}
               className="btn btn-outline mr-2"
             >
-              Annuler
+              Réinitialiser
             </button>
-            <button className="btn btn-primary">
+            <button 
+              className="btn btn-primary"
+              onClick={applyFilters}
+            >
               Appliquer
             </button>
           </div>
@@ -352,55 +573,101 @@ const Clients: React.FC = () => {
         <div className="card">
           <h4 className="text-sm font-medium text-gray-500 mb-1">Total clients</h4>
           <p className="text-2xl font-semibold">{clients.length}</p>
-      </div>
+        </div>
       
-          <div className="card">
-          <h4 className="text-sm font-medium text-gray-500 mb-1">Livraisons en attente</h4>
-          <p className="text-2xl font-semibold">
-            {clients.reduce((sum, client) => sum + client.pendingDeliveryCount, 0)}
-          </p>
+        {activeTab === 'users' ? (
+          <>
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Livraisons en attente</h4>
+              <p className="text-2xl font-semibold">
+                {clients.reduce((sum, client) => sum + client.pendingDeliveryCount, 0)}
+              </p>
+            </div>
+                
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Livraisons totales</h4>
+              <p className="text-2xl font-semibold">
+                {clients.reduce((sum, client) => sum + client.deliveryCount, 0)}
+              </p>
+            </div>
+              
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Revenu total</h4>
+              <p className="text-2xl font-semibold">
+                {clients.reduce((sum, client) => sum + client.totalSpent, 0).toLocaleString()} XOF
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Total adresses</h4>
+              <p className="text-2xl font-semibold">{addresses.length}</p>
             </div>
             
-        <div className="card">
-          <h4 className="text-sm font-medium text-gray-500 mb-1">Livraisons totales</h4>
-          <p className="text-2xl font-semibold">
-            {clients.reduce((sum, client) => sum + client.deliveryCount, 0)}
-          </p>
-          </div>
-          
-          <div className="card">
-          <h4 className="text-sm font-medium text-gray-500 mb-1">Revenu total</h4>
-          <p className="text-2xl font-semibold">
-            {clients.reduce((sum, client) => sum + client.totalSpent, 0).toLocaleString()} XOF
-          </p>
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Adresses par défaut</h4>
+              <p className="text-2xl font-semibold">
+                {addresses.filter(address => address.isDefault).length}
+              </p>
             </div>
-          </div>
+            
+            <div className="card">
+              <h4 className="text-sm font-medium text-gray-500 mb-1">Région la plus fréquente</h4>
+              <p className="text-2xl font-semibold">
+                {uniqueRegions.length > 0 ? uniqueRegions[0] : 'N/A'}
+              </p>
+            </div>
+          </>
+        )}
+      </div>
           
       {/* Main content */}
-                  <div>
+      <div>
         {activeTab === 'users' ? (
-          <DataTable
-            data={filteredClients}
-            columns={clientColumns}
-            keyExtractor={(client) => client.id}
-            onRowClick={(client) => console.log('Client sélectionné:', client)}
-          />
+          <>
+            <div className="mb-4 text-sm text-gray-500">
+              Affichage de {filteredClients.length} sur {clients.length} clients
+            </div>
+            <DataTable
+              data={filteredClients}
+              columns={clientColumns}
+              keyExtractor={(client) => client.id}
+              onRowClick={(client) => console.log('Client sélectionné:', client)}
+            />
+          </>
         ) : (
-          <div className="text-center p-8">
-            <MapPin size={48} className="mx-auto text-gray-400 mb-4" />
-            <h3 className="text-lg font-medium mb-2">Aucune adresse disponible</h3>
-            <p className="text-gray-500 mb-4">
-              Les données d'adresses ne sont pas encore disponibles à partir de l'API
-                    </p>
-            <button
-              onClick={() => setActiveTab('users')}
-              className="btn btn-primary"
-            >
-              Revenir aux clients
-            </button>
-          </div>
+          <>
+            {addresses.length > 0 ? (
+              <>
+                <div className="mb-4 text-sm text-gray-500">
+                  Affichage de {filteredAddresses.length} sur {addresses.length} adresses
+                </div>
+                <DataTable
+                  data={filteredAddresses}
+                  columns={addressColumns}
+                  keyExtractor={(address) => address.id}
+                  onRowClick={(address) => console.log('Adresse sélectionnée:', address)}
+                />
+              </>
+            ) : (
+              <div className="text-center p-8">
+                <MapPin size={48} className="mx-auto text-gray-400 mb-4" />
+                <h3 className="text-lg font-medium mb-2">Aucune adresse disponible</h3>
+                <p className="text-gray-500 mb-4">
+                  Aucune adresse n'a été trouvée dans la base de données
+                </p>
+                <button
+                  onClick={() => setActiveTab('users')}
+                  className="btn btn-primary"
+                >
+                  Revenir aux clients
+                </button>
+              </div>
+            )}
+          </>
         )}
-        </div>
+      </div>
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Bell, 
   Mail, 
@@ -6,12 +6,24 @@ import {
   RefreshCw, 
   Send,
   Users,
-  Filter
+  Filter,
+  Loader,
+  Trash2,
+  AlertCircle
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import DataTable from '../components/ui/DataTable';
 import { users, requests } from '../data/mockData';
+import { 
+  getConversations,
+  getMessages,
+  sendMessage,
+  markMessagesAsRead,
+  deleteConversation,
+  ChatConversation,
+  ChatMessage
+} from '../services/api';
 
 // Mock notifications data
 const notifications = Array.from({ length: 30 }, (_, index) => {
@@ -58,8 +70,171 @@ const notifications = Array.from({ length: 30 }, (_, index) => {
 });
 
 const Communications: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'notifications' | 'messages'>('notifications');
+  const [activeTab, setActiveTab] = useState<'notifications' | 'messages'>('messages');
   const [showFilters, setShowFilters] = useState(false);
+  const [conversations, setConversations] = useState<ChatConversation[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<ChatConversation | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [activeUserId, setActiveUserId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Charger les conversations au chargement de la page
+  useEffect(() => {
+    fetchConversations();
+  }, []);
+  
+  // Charger les messages lorsqu'une conversation est sélectionnée
+  useEffect(() => {
+    if (selectedConversation) {
+      fetchMessages(selectedConversation.id);
+      markAsRead(selectedConversation.id);
+      setActiveUserId(selectedConversation.kabaUserId);
+    }
+  }, [selectedConversation]);
+  
+  // Faire défiler vers le bas quand de nouveaux messages sont chargés
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+  
+  // Récupérer les conversations
+  const fetchConversations = async () => {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const data = await getConversations();
+      setConversations(data);
+      
+      // Sélectionner la première conversation par défaut
+      if (data.length > 0 && !selectedConversation) {
+        setSelectedConversation(data[0]);
+      }
+    } catch (err) {
+      setError('Erreur lors du chargement des conversations');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // Récupérer les messages d'une conversation
+  const fetchMessages = async (conversationId: string) => {
+    setIsLoadingMessages(true);
+    setError(null);
+    
+    try {
+      const data = await getMessages(conversationId);
+      // Inverser pour afficher les plus récents en bas
+      setMessages(data.reverse());
+    } catch (err) {
+      setError('Erreur lors du chargement des messages');
+      console.error(err);
+    } finally {
+      setIsLoadingMessages(false);
+    }
+  };
+  
+  // Marquer les messages comme lus
+  const markAsRead = async (conversationId: string) => {
+    try {
+      await markMessagesAsRead(conversationId, true); // true = admin
+      
+      // Mettre à jour le compteur de messages non lus dans la liste des conversations
+      setConversations(prevConversations => 
+        prevConversations.map(conv => 
+          conv.id === conversationId 
+            ? { ...conv, unreadAdminMessages: 0 } 
+            : conv
+        )
+      );
+    } catch (err) {
+      console.error('Erreur lors du marquage des messages comme lus:', err);
+    }
+  };
+  
+  // Supprimer une conversation
+  const handleDeleteConversation = async () => {
+    if (!selectedConversation) return;
+    
+    try {
+      const result = await deleteConversation(selectedConversation.id);
+      
+      if (result.success) {
+        // Retirer la conversation supprimée de la liste
+        setConversations(prevConversations => 
+          prevConversations.filter(conv => conv.id !== selectedConversation.id)
+        );
+        
+        // Réinitialiser la conversation sélectionnée
+        setSelectedConversation(null);
+        setMessages([]);
+        
+        // Fermer le modal de confirmation
+        setShowDeleteConfirm(false);
+      } else {
+        setError(`Erreur lors de la suppression: ${result.message || 'Erreur inconnue'}`);
+      }
+    } catch (err) {
+      console.error('Erreur lors de la suppression de la conversation:', err);
+      setError('Erreur lors de la suppression de la conversation');
+    }
+  };
+  
+  // Envoyer un nouveau message
+  const handleSendMessage = async () => {
+    if (!newMessage.trim() || !selectedConversation) return;
+    
+    try {
+      const messageData = {
+        content: newMessage,
+        kabaUserId: selectedConversation.kabaUserId,
+        adminId: 'admin-1', // À remplacer par l'ID de l'administrateur connecté
+        isFromAdmin: true,
+        conversationId: selectedConversation.id
+      };
+      
+      const sentMessage = await sendMessage(messageData);
+      
+      // Ajouter le message envoyé à la liste des messages
+      setMessages(prev => [...prev, sentMessage]);
+      
+      // Mettre à jour la dernière date et le dernier message dans la liste des conversations
+      setConversations(prevConversations => 
+        prevConversations.map(conv => 
+          conv.id === selectedConversation.id 
+            ? { 
+                ...conv, 
+                lastMessageAt: new Date().toISOString(),
+                unreadUserMessages: conv.unreadUserMessages + 1,
+                messages: [sentMessage]
+              } 
+            : conv
+        )
+      );
+      
+      // Effacer le champ de saisie
+      setNewMessage('');
+    } catch (err) {
+      setError('Erreur lors de l\'envoi du message');
+      console.error(err);
+    }
+  };
+  
+  // Gérer l'appui sur Entrée pour envoyer un message
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
   
   // Notifications columns
   const notificationsColumns = [
@@ -112,6 +287,20 @@ const Communications: React.FC = () => {
       )
     }
   ];
+  
+  // Fonction pour formater la date
+  const formatDate = (dateString: string) => {
+    return format(new Date(dateString), 'Pp', { locale: fr });
+  };
+  
+  // Afficher un message d'erreur
+  if (error) {
+    return (
+      <div className="p-4 bg-red-50 border border-red-200 rounded-md text-red-700 mb-4">
+        {error}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -129,9 +318,13 @@ const Communications: React.FC = () => {
             <span>Filtres</span>
           </button>
           
-          <button className="btn btn-primary flex items-center space-x-2">
-            <Send size={16} />
-            <span>Nouvelle notification</span>
+          <button 
+            onClick={fetchConversations}
+            className="btn btn-primary flex items-center space-x-2"
+            disabled={isLoading}
+          >
+            {isLoading ? <Loader size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+            <span>Rafraîchir</span>
           </button>
         </div>
       </div>
@@ -283,104 +476,187 @@ const Communications: React.FC = () => {
             </div>
             
             <div className="overflow-y-auto max-h-[600px]">
-              {users.slice(0, 10).map((user, index) => (
-                <div 
-                  key={user.id}
-                  className={`flex items-center px-4 py-3 border-b ${
-                    index === 0 ? 'bg-primary-50' : 'hover:bg-gray-50'
-                  } cursor-pointer`}
-                >
-                  <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
-                    <Users size={16} className="text-primary-600" />
-                  </div>
-                  <div className="ml-3">
-                    <p className="font-medium">{user.name}</p>
-                    <p className="text-sm text-gray-500">{user.email}</p>
-                  </div>
-                  {index < 3 && (
-                    <div className="ml-auto">
-                      <span className="bg-primary-100 text-primary-800 text-xs font-medium px-2 py-1 rounded-full">
-                        {index === 0 ? '3' : index === 1 ? '1' : '2'}
-                      </span>
-                    </div>
-                  )}
+              {isLoading ? (
+                <div className="flex items-center justify-center p-6">
+                  <Loader size={24} className="animate-spin text-primary-500" />
                 </div>
-              ))}
+              ) : conversations.length === 0 ? (
+                <div className="p-6 text-center text-gray-500">
+                  Aucune conversation trouvée
+                </div>
+              ) : (
+                conversations.map((conversation) => {
+                  const lastMessage = conversation.messages[0];
+                  const hasUnreadMessages = conversation.unreadAdminMessages > 0;
+                  
+                  // Trouver l'utilisateur correspondant (peut être remplacé par les vraies données utilisateur)
+                  const user = users.find(u => u.id === conversation.kabaUserId) || { 
+                    id: conversation.kabaUserId,
+                    name: `Client ${conversation.kabaUserId}`,
+                    email: 'email@example.com'
+                  };
+                  
+                  return (
+                    <div 
+                      key={conversation.id}
+                      className={`flex items-center px-4 py-3 border-b ${
+                        selectedConversation?.id === conversation.id ? 'bg-primary-50' : 'hover:bg-gray-50'
+                      } cursor-pointer`}
+                      onClick={() => setSelectedConversation(conversation)}
+                    >
+                      <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
+                        <Users size={16} className="text-primary-600" />
+                      </div>
+                      <div className="ml-3 flex-grow min-w-0">
+                        <p className={`font-medium ${hasUnreadMessages ? 'text-primary-600' : ''}`}>
+                          {user.name}
+                        </p>
+                        {lastMessage && (
+                          <p className="text-sm text-gray-500 truncate">
+                            {lastMessage.content}
+                          </p>
+                        )}
+                      </div>
+                      {conversation.unreadAdminMessages > 0 && (
+                        <div className="ml-auto">
+                          <span className="bg-primary-100 text-primary-800 text-xs font-medium px-2 py-1 rounded-full">
+                            {conversation.unreadAdminMessages}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
           
           {/* Message thread */}
           <div className="lg:col-span-2 flex flex-col card p-0 overflow-hidden h-[calc(100vh-16rem)]">
-            <div className="px-6 py-4 border-b">
-              <div className="flex items-center">
-                <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
-                  <Users size={16} className="text-primary-600" />
-                </div>
-                <div className="ml-3">
-                  <p className="font-medium">{users[0].name}</p>
-                  <div className="flex items-center text-xs text-gray-500">
-                    <span className="inline-block h-2 w-2 rounded-full bg-success-500 mr-1"></span>
-                    En ligne
+            {selectedConversation ? (
+              <>
+                <div className="px-6 py-4 border-b">
+                  <div className="flex items-center">
+                    <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center">
+                      <Users size={16} className="text-primary-600" />
+                    </div>
+                    <div className="ml-3">
+                      <p className="font-medium">
+                        {users.find(u => u.id === activeUserId)?.name || `Client ${activeUserId}`}
+                      </p>
+                      <div className="flex items-center text-xs text-gray-500">
+                        <span className="inline-block h-2 w-2 rounded-full bg-success-500 mr-1"></span>
+                        Dernière activité: {formatDate(selectedConversation.lastMessageAt)}
+                      </div>
+                    </div>
+                    <div className="ml-auto flex space-x-2">
+                      <button 
+                        className="p-2 rounded-full hover:bg-gray-100"
+                        onClick={() => fetchMessages(selectedConversation.id)}
+                      >
+                        <RefreshCw size={16} />
+                      </button>
+                      <button 
+                        className="p-2 rounded-full hover:bg-gray-100 text-error-500"
+                        onClick={() => setShowDeleteConfirm(true)}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
-                <div className="ml-auto flex space-x-2">
-                  <button className="p-2 rounded-full hover:bg-gray-100">
-                    <Mail size={16} />
-                  </button>
-                  <button className="p-2 rounded-full hover:bg-gray-100">
-                    <RefreshCw size={16} />
-                  </button>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-4" ref={messagesContainerRef}>
+                  {isLoadingMessages ? (
+                    <div className="flex items-center justify-center h-full">
+                      <Loader size={24} className="animate-spin text-primary-500" />
+                    </div>
+                  ) : messages.length === 0 ? (
+                    <div className="flex items-center justify-center h-full text-gray-500">
+                      Aucun message dans cette conversation
+                    </div>
+                  ) : (
+                    messages.map(message => (
+                      <div 
+                        key={message.id} 
+                        className={`flex items-end ${message.isFromAdmin ? 'justify-end' : ''}`}
+                      >
+                        {!message.isFromAdmin && (
+                          <div className="h-8 w-8 rounded-full bg-primary-100 flex items-center justify-center">
+                            <Users size={14} className="text-primary-600" />
+                          </div>
+                        )}
+                        <div 
+                          className={`${
+                            message.isFromAdmin 
+                              ? 'bg-primary-100 rounded-lg rounded-br-none ml-auto' 
+                              : 'bg-gray-100 rounded-lg rounded-bl-none ml-2'
+                          } p-3 max-w-[70%]`}
+                        >
+                          <p>{message.content}</p>
+                          <span className="text-xs text-gray-500 mt-1 block">
+                            {format(new Date(message.createdAt), 'HH:mm')}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={messageEndRef} />
                 </div>
+                
+                <div className="px-4 py-3 border-t">
+                  <div className="flex items-center">
+                    <textarea 
+                      className="input mr-2 flex-grow resize-none min-h-[44px]"
+                      placeholder="Écrire un message..."
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      rows={1}
+                    />
+                    <button 
+                      className="btn btn-primary" 
+                      onClick={handleSendMessage}
+                      disabled={!newMessage.trim()}
+                    >
+                      <Send size={16} />
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                Sélectionnez une conversation pour commencer à chatter
               </div>
+            )}
+          </div>
+        </div>
+      )}
+      
+      {/* Modal de confirmation de suppression */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full animate-fade-in-down">
+            <div className="flex items-center mb-4 text-error-600">
+              <AlertCircle size={24} className="mr-3" />
+              <h3 className="font-semibold text-lg">Confirmer la suppression</h3>
             </div>
-            
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="flex items-end">
-                <div className="h-8 w-8 rounded-full bg-primary-100 flex items-center justify-center">
-                  <Users size={14} className="text-primary-600" />
-                </div>
-                <div className="ml-2 bg-gray-100 p-3 rounded-lg rounded-bl-none max-w-[70%]">
-                  <p>Bonjour, je voulais savoir quand ma livraison #KB-000156 arrivera ?</p>
-                  <span className="text-xs text-gray-500 mt-1 block">10:24</span>
-                </div>
-              </div>
-              
-              <div className="flex items-end justify-end">
-                <div className="bg-primary-100 p-3 rounded-lg rounded-br-none max-w-[70%]">
-                  <p>Bonjour ! Votre colis est actuellement en transit et devrait arriver dans 2-3 jours ouvrés.</p>
-                  <span className="text-xs text-gray-500 mt-1 block">10:30</span>
-                </div>
-              </div>
-              
-              <div className="flex items-end">
-                <div className="h-8 w-8 rounded-full bg-primary-100 flex items-center justify-center">
-                  <Users size={14} className="text-primary-600" />
-                </div>
-                <div className="ml-2 bg-gray-100 p-3 rounded-lg rounded-bl-none max-w-[70%]">
-                  <p>Merci pour l'information ! Est-ce que je recevrai une notification quand il sera prêt à être livré ?</p>
-                  <span className="text-xs text-gray-500 mt-1 block">10:35</span>
-                </div>
-              </div>
-              
-              <div className="flex items-end justify-end">
-                <div className="bg-primary-100 p-3 rounded-lg rounded-br-none max-w-[70%]">
-                  <p>Oui, vous recevrez une notification par email et SMS quand votre colis sera prêt à être livré, avec une fenêtre de livraison de 2 heures.</p>
-                  <span className="text-xs text-gray-500 mt-1 block">10:42</span>
-                </div>
-              </div>
-            </div>
-            
-            <div className="px-4 py-3 border-t">
-              <div className="flex items-center">
-                <input 
-                  type="text" 
-                  className="input mr-2 flex-grow"
-                  placeholder="Écrire un message..."
-                />
-                <button className="btn btn-primary">
-                  <Send size={16} />
-                </button>
-              </div>
+            <p className="text-gray-700 mb-6">
+              Êtes-vous sûr de vouloir supprimer cette conversation ? Cette action est irréversible et tous les messages associés seront également supprimés.
+            </p>
+            <div className="flex space-x-3 justify-end">
+              <button 
+                className="btn btn-outline" 
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Annuler
+              </button>
+              <button 
+                className="btn btn-error" 
+                onClick={handleDeleteConversation}
+              >
+                Supprimer
+              </button>
             </div>
           </div>
         </div>

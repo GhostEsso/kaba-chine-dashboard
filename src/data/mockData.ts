@@ -1,5 +1,5 @@
 // Status types and constants
-export type DeliveryStatus = 'pending' | 'accepted' | 'in-transit' | 'delivered' | 'cancelled';
+export type DeliveryStatus = 'pending' | 'accepted' | 'collected' | 'in-transit' | 'delivered' | 'cancelled';
 export type PaymentStatus = 'pending' | 'partial' | 'paid' | 'refunded' | 'failed';
 export type DeliveryMethod = 'boat' | 'plane';
 

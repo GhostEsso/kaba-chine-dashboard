@@ -13,6 +13,7 @@ import Settings from './pages/Settings';
 import Login from './pages/Login';
 import TrainingRequests from './pages/TrainingRequests';
 import ShippingRates from './pages/ShippingRates';
+import AfalikaAdmin from './pages/AfalikaAdmin';
 import Layout from './components/layout/Layout';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/auth/ProtectedRoute';
@@ -119,6 +120,17 @@ function App() {
               <ProtectedRoute>
                 <Layout>
                   <Reports />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          
+          <Route
+            path="/afalika-admin"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <AfalikaAdmin />
                 </Layout>
               </ProtectedRoute>
             }

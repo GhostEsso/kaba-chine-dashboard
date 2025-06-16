@@ -2,16 +2,15 @@ import React from 'react';
 import { Bell, Menu, Search, User } from 'lucide-react';
 
 interface HeaderProps {
-  title: string;
   onMenuClick: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ title, onMenuClick }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   return (
     <header className="bg-white border-b border-gray-200 z-20 sticky top-0">
       <div className="max-w-[1920px] mx-auto">
         <div className="px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
+          <div className="flex items-center justify-between h-20">
             <div className="flex items-center min-w-0">
               <button
                 onClick={onMenuClick}
@@ -20,9 +19,6 @@ const Header: React.FC<HeaderProps> = ({ title, onMenuClick }) => {
               >
                 <Menu size={20} />
               </button>
-              <h1 className="ml-2 text-xl font-semibold text-gray-900 lg:ml-0 truncate">
-                {title}
-              </h1>
             </div>
             
             <div className="hidden md:block flex-1 max-w-2xl mx-auto px-4">

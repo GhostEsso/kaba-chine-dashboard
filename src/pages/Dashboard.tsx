@@ -4,14 +4,22 @@ import {
   TrendingUp, 
   Users, 
   CreditCard,
-  BarChart2
+  BarChart2,
+  Clock,
+  Check,
+  X,
+  Truck,
+  ExternalLink
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import StatCard from '../components/ui/StatCard';
 import StatusDistributionChart from '../components/charts/StatusDistributionChart';
 import RevenueChart from '../components/charts/RevenueChart';
 import DeliveryMethodChart from '../components/dashboard/DeliveryMethodChart';
 import SystemStatusCard from '../components/dashboard/SystemStatusCard';
 import { fetchDeliveries } from '../services/api';
+import { format } from 'date-fns';
+import { fr } from 'date-fns/locale';
 
 const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
@@ -27,6 +35,16 @@ const Dashboard: React.FC = () => {
     boatDeliveries: 0,
     planeDeliveries: 0
   });
+  const [revenueData, setRevenueData] = useState<any[]>([]);
+
+  // Fonction pour obtenir le nom du mois à partir d'un numéro
+  const getMonthName = (monthNumber: number): string => {
+    const months = [
+      'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 
+      'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'
+    ];
+    return months[monthNumber - 1] || '';
+  };
 
   useEffect(() => {
     const loadDashboardData = async () => {
@@ -49,6 +67,56 @@ const Dashboard: React.FC = () => {
         // Calculer le revenu total (somme des valeurs déclarées)
         const revenue = apiDeliveries.reduce((sum, delivery) => sum + (delivery.declaredValue || 0), 0);
         
+        // Calculer les revenus mensuels
+        const currentYear = new Date().getFullYear();
+        const monthlyRevenue: { [key: string]: number } = {};
+        const monthlyProfit: { [key: string]: number } = {};
+        
+        // Initialiser tous les mois de l'année en cours avec des valeurs à 0
+        for (let month = 1; month <= 12; month++) {
+          const monthKey = `${currentYear}-${month.toString().padStart(2, '0')}`;
+          monthlyRevenue[monthKey] = 0;
+          monthlyProfit[monthKey] = 0;
+        }
+        
+        // Agréger les revenus par mois
+        apiDeliveries.forEach(delivery => {
+          if (delivery.createdAt) {
+            const date = new Date(delivery.createdAt);
+            const monthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, '0')}`;
+            
+            if (monthlyRevenue[monthKey] !== undefined) {
+              // Ajouter la valeur déclarée au revenu du mois
+              monthlyRevenue[monthKey] += delivery.declaredValue || 0;
+              
+              // Calculer le profit (10% du revenu pour cet exemple)
+              monthlyProfit[monthKey] += (delivery.declaredValue || 0) * 0.1;
+            }
+          }
+        });
+        
+        // Convertir les données mensuelles en un format compatible avec le graphique
+        const chartData = Object.entries(monthlyRevenue)
+          .map(([key, value]) => {
+            const [year, month] = key.split('-');
+            return {
+              month: getMonthName(parseInt(month)),
+              revenue: value,
+              profit: monthlyProfit[key] || 0
+            };
+          })
+          // Filtrer pour ne garder que les derniers 6 mois
+          .filter((_, index, array) => index >= array.length - 6)
+          // Trier par mois
+          .sort((a, b) => {
+            const monthIndexA = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'].indexOf(a.month);
+            const monthIndexB = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'].indexOf(b.month);
+            return monthIndexA - monthIndexB;
+          });
+        
+        // Mettre à jour les données du graphique
+        setRevenueData(chartData);
+        
         setDashboardData({
           totalDeliveries: total,
           pendingDeliveries: pending,
@@ -63,6 +131,7 @@ const Dashboard: React.FC = () => {
         
         console.log('Livraisons par bateau:', byBoat);
         console.log('Livraisons par avion:', byPlane);
+        console.log('Données de revenus:', chartData);
         
         setError(null);
       } catch (err) {
@@ -83,16 +152,6 @@ const Dashboard: React.FC = () => {
     { name: 'En transit', value: dashboardData.inTransitDeliveries, color: '#8B5CF6' },
     { name: 'Livré', value: dashboardData.deliveredDeliveries, color: '#10B981' },
     { name: 'Annulé', value: dashboardData.cancelledDeliveries, color: '#EF4444' },
-  ];
-  
-  // Données adaptées pour le graphique de revenus
-  const revenueData = [
-    { name: 'Jan', value: 10000 },
-    { name: 'Fév', value: 15000 },
-    { name: 'Mar', value: 12000 },
-    { name: 'Avr', value: 18000 },
-    { name: 'Mai', value: 16000 },
-    { name: 'Juin', value: 20000 },
   ];
 
   if (loading) {
@@ -153,6 +212,81 @@ const Dashboard: React.FC = () => {
           trend={{ value: 0, label: 'aujourd\'hui', positive: true }}
           color="secondary"
         />
+      </div>
+      
+      {/* Nouvelle section: Résumé des commandes par statut */}
+      <div className="card">
+        <h3 className="text-lg font-medium mb-4">Résumé des commandes</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Commandes en attente */}
+          <div className="border rounded-lg p-4 bg-amber-50 border-amber-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center">
+                <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center mr-3">
+                  <Clock size={20} className="text-amber-600" />
+                </div>
+                <h4 className="font-medium">En attente</h4>
+              </div>
+              <span className="text-2xl font-bold text-amber-600">{dashboardData.pendingDeliveries}</span>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Commandes nécessitant une validation ou un refus
+            </p>
+            <Link 
+              to="/deliveries?status=pending" 
+              className="btn btn-sm btn-outline border-amber-300 hover:bg-amber-100 hover:border-amber-400 w-full flex items-center justify-center gap-1"
+            >
+              <span>Voir les commandes</span>
+              <ExternalLink size={14} />
+            </Link>
+          </div>
+          
+          {/* Commandes acceptées */}
+          <div className="border rounded-lg p-4 bg-blue-50 border-blue-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center">
+                <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center mr-3">
+                  <Check size={20} className="text-blue-600" />
+                </div>
+                <h4 className="font-medium">Acceptées</h4>
+              </div>
+              <span className="text-2xl font-bold text-blue-600">{dashboardData.acceptedDeliveries}</span>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Commandes validées en attente d'expédition
+            </p>
+            <Link 
+              to="/deliveries?status=accepted" 
+              className="btn btn-sm btn-outline border-blue-300 hover:bg-blue-100 hover:border-blue-400 w-full flex items-center justify-center gap-1"
+            >
+              <span>Voir les commandes</span>
+              <ExternalLink size={14} />
+            </Link>
+          </div>
+          
+          {/* Commandes refusées */}
+          <div className="border rounded-lg p-4 bg-red-50 border-red-200">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center mr-3">
+                  <X size={20} className="text-red-600" />
+                </div>
+                <h4 className="font-medium">Refusées</h4>
+              </div>
+              <span className="text-2xl font-bold text-red-600">{dashboardData.cancelledDeliveries}</span>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Commandes annulées ou refusées
+            </p>
+            <Link 
+              to="/deliveries?status=cancelled" 
+              className="btn btn-sm btn-outline border-red-300 hover:bg-red-100 hover:border-red-400 w-full flex items-center justify-center gap-1"
+            >
+              <span>Voir les commandes</span>
+              <ExternalLink size={14} />
+            </Link>
+          </div>
+        </div>
       </div>
       
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

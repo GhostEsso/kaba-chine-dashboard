@@ -34,6 +34,12 @@ const StatusBadge: React.FC<StatusBadgeProps> = ({ status, large = false }) => {
       textColor = 'text-purple-800';
       label = 'En transit';
       break;
+    case 'collected':
+    case 'collecté':
+      bgColor = 'bg-cyan-100';
+      textColor = 'text-cyan-800';
+      label = 'Collecté';
+      break;
       case 'delivered':
     case 'livré':
       bgColor = 'bg-green-100';

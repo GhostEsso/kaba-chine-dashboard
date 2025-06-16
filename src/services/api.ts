@@ -1,9 +1,9 @@
 import { DeliveryStatus } from '../data/mockData';
 
 // URL de base de l'API
-const API_BASE_URL = 'http://localhost:3000/api';
+export const API_BASE_URL = 'http://localhost:3000/api';
 // URL de base du serveur (sans le /api)
-const SERVER_BASE_URL = API_BASE_URL.replace(/\/api$/, '');
+export const SERVER_BASE_URL = API_BASE_URL.replace(/\/api$/, '');
 
 // Fonction pour corriger les URLs des images
 const fixImageUrl = (url: string | null): string => {
@@ -60,12 +60,18 @@ export interface ApiDelivery {
   afalikaBatchId?: string;
   afalikaTrackingId?: string;
   shippingMode?: string;
+  cancellationReason?: string;
   payments?: Array<{
     id: string;
     amount: number;
     paymentStatus: string;
     paymentDate?: string;
     transactionId?: string;
+  }>;
+  statusHistory?: Array<{
+    status: string;
+    note?: string;
+    createdAt: string;
   }>;
 }
 
@@ -114,6 +120,48 @@ export interface ApiRemittance {
   paymentCount: number;
   status: string;
 }
+
+// Interface pour les adresses
+export interface ApiAddress {
+  id: string;
+  street: string;
+  city: string;
+  region: string;
+  landmark?: string;
+  postalCode?: string;
+  gpsCoordinates?: string;
+  contactPhone?: string;
+  isVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
+  kabaUserId: string;
+}
+
+// Fonction pour récupérer les adresses depuis l'API
+export const fetchAddresses = async (): Promise<ApiAddress[]> => {
+  try {
+    // Construction de l'URL
+    const url = `${API_BASE_URL}/addresses`;
+    
+    console.log('Récupération des adresses depuis:', url);
+    
+    // Récupération des adresses
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`Erreur API: ${response.status}`);
+    }
+    
+    // Récupération des données
+    const addresses = await response.json();
+    console.log('Adresses récupérées:', addresses.length);
+    
+    return addresses;
+  } catch (error) {
+    console.error('Erreur lors de la récupération des adresses:', error);
+    return [];
+  }
+};
 
 // Fonction pour récupérer les clients à partir des données de livraison
 export const fetchClients = async (): Promise<ApiClient[]> => {
@@ -266,7 +314,14 @@ export const fetchDeliveries = async (filters?: DeliveryFilters): Promise<ApiDel
       }
     }
     
-    console.log('Données après filtrage côté client:', data.length, 'livraisons');
+    // Trier les livraisons par date de création (les plus récentes en premier)
+    data.sort((a: ApiDelivery, b: ApiDelivery) => {
+      const dateA = new Date(a.createdAt).getTime();
+      const dateB = new Date(b.createdAt).getTime();
+      return dateB - dateA; // Ordre décroissant (plus récent au plus ancien)
+    });
+    
+    console.log('Données après filtrage et tri:', data.length, 'livraisons');
     return data;
   } catch (error) {
     console.error('Erreur lors de la récupération des livraisons:', error);
@@ -327,11 +382,11 @@ export const adaptDeliveryData = (apiDelivery: ApiDelivery) => {
   const statusMap: Record<string, DeliveryStatus> = {
     'PENDING': 'pending',
     'ACCEPTED': 'accepted', 
+    'COLLECTED': 'collected',
     'IN_TRANSIT': 'in-transit',
     'DELIVERED': 'delivered',
     'CANCELLED': 'cancelled',
     // Gérer d'autres statuts possibles du backend qui n'ont pas d'équivalent direct
-    'COLLECTED': 'in-transit',
     'ARRIVED': 'in-transit',
     'READY_FOR_PICKUP': 'in-transit',
     'OUT_FOR_DELIVERY': 'in-transit'
@@ -362,6 +417,23 @@ export const adaptDeliveryData = (apiDelivery: ApiDelivery) => {
   
   console.log('PaymentStatus pour livraison', apiDelivery.id, ':', paymentStatus);
   
+  // Extraire le motif d'annulation du statusHistory si non disponible directement
+  let cancellationReason = apiDelivery.cancellationReason;
+  
+  if (!cancellationReason && apiDelivery.currentStatus === 'CANCELLED' && apiDelivery.statusHistory && apiDelivery.statusHistory.length > 0) {
+    // Chercher l'entrée CANCELLED la plus récente dans l'historique
+    const cancellationEntry = apiDelivery.statusHistory
+      .filter(entry => entry.status === 'CANCELLED' && entry.note)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    
+    if (cancellationEntry && cancellationEntry.note) {
+      // Extraire le motif du format "Demande refusée: <motif>"
+      const motifMatch = cancellationEntry.note.match(/Demande refusée:\s*(.*)/);
+      cancellationReason = motifMatch ? motifMatch[1] : cancellationEntry.note;
+      console.log('Motif d\'annulation extrait du statusHistory:', cancellationReason);
+    }
+  }
+  
   // Corriger les URLs des images pour utiliser l'URL locale
   const productImage = fixImageUrl(apiDelivery.productImage);
   const purchaseConfirmationImage = fixImageUrl(apiDelivery.purchaseProofImage);
@@ -381,6 +453,7 @@ export const adaptDeliveryData = (apiDelivery: ApiDelivery) => {
   // Créer l'objet adapté avec toutes les données nécessaires
   const adaptedDelivery = {
     id: apiDelivery.id,
+    kabaUserId: apiDelivery.kabaUserId,
     trackingNumber: apiDelivery.trackingCode,
     packageName: apiDelivery.packageName,
     userName: apiDelivery.recipientName, // On utilise le nom du destinataire comme "client"
@@ -397,13 +470,16 @@ export const adaptDeliveryData = (apiDelivery: ApiDelivery) => {
     productImage,
     purchaseConfirmationImage,
     estimatedDeliveryDate: apiDelivery.estimatedArrival ? new Date(apiDelivery.estimatedArrival) : undefined,
-    notes: apiDelivery.notes
+    notes: apiDelivery.notes,
+    cancellationReason: cancellationReason,
+    statusHistory: apiDelivery.statusHistory // Ajouter l'historique des statuts pour plus de détails si nécessaire
   };
   
   // Log de l'objet adapté
   console.log('Objet adapté pour livraison', apiDelivery.id, ':', JSON.stringify({
     id: adaptedDelivery.id,
     status: adaptedDelivery.status,
+    kabaUserId: adaptedDelivery.kabaUserId,
     deliveryMethod: adaptedDelivery.deliveryMethod,
     paymentStatus: adaptedDelivery.paymentStatus
   }));
@@ -482,5 +558,243 @@ export const fetchRemittances = async (): Promise<ApiRemittance[]> => {
     console.error('Erreur lors de la récupération des versements:', error);
     // Si l'API ne fonctionne pas, retourner un tableau vide
     return [];
+  }
+};
+
+// Interface pour l'acceptation d'une livraison
+export interface AcceptDeliveryData {
+  actualWeight: number;
+  estimatedArrival: Date;
+  afalikaBatchId?: string;
+  afalikaTrackingId?: string;
+  acceptanceNote?: string;
+}
+
+// Fonction pour accepter une demande de livraison
+export const acceptDelivery = async (
+  id: string,
+  data: AcceptDeliveryData
+): Promise<ApiDelivery | null> => {
+  try {
+    console.log(`Acceptation de la demande de livraison ${id}...`);
+    console.log('Données d\'acceptation:', data);
+
+    const url = `${API_BASE_URL}/deliveries/${id}/accept`;
+    
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Erreur inconnue' }));
+      console.error('Erreur lors de l\'acceptation de la livraison:', errorData);
+      throw new Error(`Erreur API: ${response.status} - ${errorData.message || 'Erreur inconnue'}`);
+    }
+
+    const updatedDelivery = await response.json();
+    console.log('Livraison acceptée avec succès:', updatedDelivery);
+    
+    return updatedDelivery;
+  } catch (error) {
+    console.error(`Erreur lors de l'acceptation de la livraison ${id}:`, error);
+    throw error;
+  }
+};
+
+// Fonction simplifiée pour accepter une demande de livraison en un seul clic
+export const acceptDeliverySimple = async (
+  id: string
+): Promise<ApiDelivery | null> => {
+  try {
+    console.log(`Acceptation simple de la demande de livraison ${id}...`);
+
+    const url = `${API_BASE_URL}/deliveries/${id}/accept-simple`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Erreur inconnue' }));
+      console.error('Erreur lors de l\'acceptation simple de la livraison:', errorData);
+      throw new Error(`Erreur API: ${response.status} - ${errorData.message || 'Erreur inconnue'}`);
+    }
+
+    const updatedDelivery = await response.json();
+    console.log('Livraison acceptée avec succès:', updatedDelivery);
+    
+    return updatedDelivery;
+  } catch (error) {
+    console.error(`Erreur lors de l'acceptation simple de la livraison ${id}:`, error);
+    throw error;
+  }
+};
+
+// Interface pour le refus d'une livraison
+export interface RejectDeliveryData {
+  rejectionReason: string;
+}
+
+// Fonction pour refuser une demande de livraison
+export const rejectDelivery = async (
+  id: string,
+  data: RejectDeliveryData
+): Promise<ApiDelivery | null> => {
+  try {
+    console.log(`Refus de la demande de livraison ${id}...`);
+    console.log('Motif du refus:', data.rejectionReason);
+
+    const url = `${API_BASE_URL}/deliveries/${id}/reject`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Erreur inconnue' }));
+      console.error('Erreur lors du refus de la livraison:', errorData);
+      throw new Error(`Erreur API: ${response.status} - ${errorData.message || 'Erreur inconnue'}`);
+    }
+
+    const updatedDelivery = await response.json();
+    console.log('Livraison refusée avec succès:', updatedDelivery);
+    
+    return updatedDelivery;
+  } catch (error) {
+    console.error(`Erreur lors du refus de la livraison ${id}:`, error);
+    throw error;
+  }
+};
+
+// Interfaces pour le chat
+export interface ChatMessage {
+  id: string;
+  content: string;
+  kabaUserId: string;
+  adminId?: string;
+  isFromAdmin: boolean;
+  isRead: boolean;
+  createdAt: string;
+  updatedAt: string;
+  conversationId: string;
+  deliveryRequestId?: string;
+}
+
+export interface ChatConversation {
+  id: string;
+  kabaUserId: string;
+  lastMessageAt: string;
+  createdAt: string;
+  updatedAt: string;
+  unreadAdminMessages: number;
+  unreadUserMessages: number;
+  messages: ChatMessage[];
+}
+
+// Fonctions pour interagir avec l'API de chat
+export const getConversations = async (userId?: string): Promise<ChatConversation[]> => {
+  const queryParams = userId ? `?userId=${userId}` : '';
+  const response = await fetch(`${API_BASE_URL}/chat/conversations${queryParams}`);
+  if (!response.ok) {
+    throw new Error('Erreur lors de la récupération des conversations');
+  }
+  return response.json();
+};
+
+export const getConversation = async (id: string): Promise<ChatConversation> => {
+  const response = await fetch(`${API_BASE_URL}/chat/conversations/${id}`);
+  if (!response.ok) {
+    throw new Error(`Erreur lors de la récupération de la conversation ${id}`);
+  }
+  return response.json();
+};
+
+export const getMessages = async (conversationId: string, limit?: number, offset?: number): Promise<ChatMessage[]> => {
+  const queryParams = new URLSearchParams({
+    conversationId,
+    ...(limit ? { limit: limit.toString() } : {}),
+    ...(offset ? { offset: offset.toString() } : {})
+  }).toString();
+  
+  const response = await fetch(`${API_BASE_URL}/chat/messages?${queryParams}`);
+  if (!response.ok) {
+    throw new Error('Erreur lors de la récupération des messages');
+  }
+  return response.json();
+};
+
+export const sendMessage = async (message: {
+  content: string;
+  kabaUserId: string;
+  adminId?: string;
+  isFromAdmin: boolean;
+  conversationId?: string;
+  deliveryRequestId?: string;
+}): Promise<ChatMessage> => {
+  const response = await fetch(`${API_BASE_URL}/chat/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(message),
+  });
+  
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: 'Erreur lors de l\'envoi du message' }));
+    console.error('Erreur détaillée:', errorData);
+    throw new Error(`Erreur API: ${response.status} - ${errorData.message || 'Erreur lors de l\'envoi du message'}`);
+  }
+  return response.json();
+};
+
+export const markMessagesAsRead = async (conversationId: string, isAdmin: boolean): Promise<{ success: boolean }> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/chat/messages/read`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ conversationId, isAdmin }),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Erreur API: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    console.error('Erreur lors du marquage des messages comme lus:', err);
+    return { success: false };
+  }
+};
+
+/**
+ * Supprimer une conversation et tous ses messages
+ */
+export const deleteConversation = async (conversationId: string): Promise<{ success: boolean, message?: string }> => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/chat/conversations/${conversationId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Erreur API: ${response.status}`);
+    }
+    
+    return await response.json();
+  } catch (err) {
+    console.error('Erreur lors de la suppression de la conversation:', err);
+    return { 
+      success: false, 
+      message: err instanceof Error ? err.message : 'Erreur lors de la suppression de la conversation'
+    };
   }
 }; 

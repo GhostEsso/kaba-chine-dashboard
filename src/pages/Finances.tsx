@@ -8,7 +8,8 @@ import {
   Percent,
   Clock,
   Check,
-  PieChart
+  PieChart,
+  Edit
 } from 'lucide-react';
 import DataTable from '../components/ui/DataTable';
 import StatusBadge from '../components/ui/StatusBadge';
@@ -35,6 +36,10 @@ const Finances: React.FC = () => {
   const [filters, setFilters] = useState<FinanceFilters>({
     dateRange: 'current-month'
   });
+  // Nouvel état pour le taux de commission
+  const [commissionRate, setCommissionRate] = useState<number>(0.1); // 10% par défaut
+  const [showCommissionModal, setShowCommissionModal] = useState<boolean>(false);
+  const [newCommissionRate, setNewCommissionRate] = useState<string>('10');
   
   // Charger les données financières
   useEffect(() => {
@@ -129,11 +134,11 @@ const Finances: React.FC = () => {
       (p.paymentStatus.toUpperCase() === 'PAID') && !p.notifiedToAfalika
     ).length;
     
-    // Calcul de la commission KABA (10%)
-    const kabaCommission = totalAmount * 0.1;
+    // Calcul de la commission KABA (utiliser le taux variable)
+    const kabaCommission = totalAmount * commissionRate;
     
-    // Montant à verser à Afalika (90%)
-    const afalikaAmount = totalAmount * 0.9;
+    // Montant à verser à Afalika (100% - commissionRate)
+    const afalikaAmount = totalAmount * (1 - commissionRate);
     
     // Total des versements
     const totalRemittancesAmount = remittances.reduce((sum, r) => sum + r.amount, 0);
@@ -154,7 +159,7 @@ const Finances: React.FC = () => {
       totalRemittancesAmount,
       remainingToRemit
     };
-  }, [filteredPayments, remittances]);
+  }, [filteredPayments, remittances, commissionRate]);
 
   // Fonction pour rafraîchir les données
   const handleRefresh = () => {
@@ -280,7 +285,7 @@ const Finances: React.FC = () => {
       }
       
       acc[monthYear].totalAmount += payment.amount;
-      acc[monthYear].commission += payment.amount * 0.1;
+      acc[monthYear].commission += payment.amount * commissionRate;
       acc[monthYear].paymentCount += 1;
       
       if (payment.paymentType === 'PARTIAL') {
@@ -305,7 +310,7 @@ const Finances: React.FC = () => {
       const monthB = new Date(b.month).getTime();
       return monthB - monthA;
     });
-  }, [filteredPayments]);
+  }, [filteredPayments, commissionRate]);
   
   // Colonnes pour le tableau des commissions
   const commissionsColumns = [
@@ -328,7 +333,7 @@ const Finances: React.FC = () => {
       accessor: (row: any) => `${row.fullAmount.toLocaleString()} XOF`,
     },
     {
-      header: 'Commission (10%)',
+      header: `Commission (${(commissionRate * 100).toFixed(0)}%)`,
       accessor: (row: any) => `${row.commission.toLocaleString()} XOF`,
       className: 'text-success-600 font-medium'
     },
@@ -337,6 +342,30 @@ const Finances: React.FC = () => {
       accessor: 'paymentCount',
     }
   ];
+
+  // Fonction pour modifier le taux de commission
+  const handleUpdateCommissionRate = () => {
+    const rate = parseFloat(newCommissionRate);
+    if (!isNaN(rate) && rate > 0 && rate <= 100) {
+      // Convertir le pourcentage en décimal (ex: 15% → 0.15)
+      setCommissionRate(rate / 100);
+      setShowCommissionModal(false);
+      // Enregistrer dans localStorage pour persistance
+      localStorage.setItem('kabaCommissionRate', (rate / 100).toString());
+    }
+  };
+
+  // Charger le taux de commission depuis localStorage au démarrage
+  useEffect(() => {
+    const savedRate = localStorage.getItem('kabaCommissionRate');
+    if (savedRate) {
+      const rate = parseFloat(savedRate);
+      if (!isNaN(rate)) {
+        setCommissionRate(rate);
+        setNewCommissionRate((rate * 100).toString());
+      }
+    }
+  }, []);
 
   // Afficher un indicateur de chargement
   if (loading) {
@@ -404,12 +433,32 @@ const Finances: React.FC = () => {
           color="primary"
         />
         
-        <StatCard
-          title="Commission KABA (10%)"
-          value={`${stats.kabaCommission.toLocaleString()} XOF`}
-          icon={<Percent size={20} />}
-          color="success"
-        />
+        <div className="card p-3 relative">
+          <div className="absolute top-3 right-3">
+            <button
+              onClick={() => {
+                setNewCommissionRate((commissionRate * 100).toString());
+                setShowCommissionModal(true);
+              }}
+              className="text-gray-400 hover:text-primary-500 transition-colors"
+              title="Modifier le taux de commission"
+            >
+              <Edit size={16} />
+            </button>
+          </div>
+          
+          <div className={`flex items-center justify-center h-10 w-10 rounded-lg bg-success-100 text-success-700 mb-3`}>
+            <Percent size={20} />
+          </div>
+          
+          <h3 className="text-sm font-medium text-gray-500">
+            Commission KABA ({(commissionRate * 100).toFixed(0)}%)
+          </h3>
+          
+          <p className="mt-1 text-xl font-semibold text-gray-900">
+            {`${stats.kabaCommission.toLocaleString()} XOF`}
+          </p>
+        </div>
         
         <StatCard
           title="Paiements partiels"
@@ -585,7 +634,7 @@ const Finances: React.FC = () => {
       {activeTab === 'remittances' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard
-            title="Montant pour Afalika (90%)"
+            title={`Montant pour Afalika (${(100 - commissionRate * 100).toFixed(0)}%)`}
             value={`${stats.afalikaAmount.toLocaleString()} XOF`}
             icon={<DollarSign size={20} />}
             color="primary"
@@ -697,6 +746,53 @@ const Finances: React.FC = () => {
           </>
         )}
       </div>
+
+      {/* Modal de modification du taux de commission */}
+      {showCommissionModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md animate-fade-in">
+            <h3 className="text-lg font-medium mb-4">Modifier le taux de commission</h3>
+            
+            <div className="mb-4">
+              <label htmlFor="commissionRate" className="block text-sm font-medium text-gray-700 mb-1">
+                Nouveau taux de commission (%)
+              </label>
+              <div className="flex items-center">
+                <input
+                  id="commissionRate"
+                  type="number"
+                  className="input flex-1 min-w-0"
+                  placeholder="10"
+                  value={newCommissionRate}
+                  onChange={(e) => setNewCommissionRate(e.target.value)}
+                  min="0"
+                  max="100"
+                  step="0.1"
+                />
+                <span className="ml-2 text-gray-500">%</span>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                Ce taux sera appliqué à tous les calculs de commission.
+              </p>
+            </div>
+            
+            <div className="flex justify-end mt-6">
+              <button 
+                onClick={() => setShowCommissionModal(false)}
+                className="btn btn-outline mr-2"
+              >
+                Annuler
+              </button>
+              <button 
+                onClick={handleUpdateCommissionRate}
+                className="btn btn-primary"
+              >
+                Sauvegarder
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

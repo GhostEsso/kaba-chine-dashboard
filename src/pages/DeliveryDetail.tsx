@@ -16,12 +16,20 @@ import {
   AlertCircle,
   ChevronRight,
   Share2,
-  Printer
+  Printer,
+  Check,
+  X,
+  MessageCircle,
+  RefreshCw
 } from 'lucide-react';
 import StatusBadge from '../components/ui/StatusBadge';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
-import { fetchDelivery, adaptDeliveryData } from '../services/api';
+import { fetchDelivery, adaptDeliveryData, acceptDeliverySimple, rejectDelivery, sendMessage } from '../services/api';
+import { syncDeliveryWithAfalika } from '../services/afalika.service';
+
+// Constante API_BASE_URL utilisée dans les logs
+const API_BASE_URL = 'http://localhost:3000/api';
 
 const DeliveryDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -29,7 +37,16 @@ const DeliveryDetail: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [delivery, setDelivery] = useState<any | null>(null);
-  const [activeTab, setActiveTab] = useState<'details' | 'suivi' | 'images'>('details');
+  const [activeTab, setActiveTab] = useState<string>('details');
+  const [acceptLoading, setAcceptLoading] = useState<boolean>(false);
+  const [rejectLoading, setRejectLoading] = useState<boolean>(false);
+  const [showRejectModal, setShowRejectModal] = useState<boolean>(false);
+  const [rejectionReason, setRejectionReason] = useState<string>('');
+  const [showContactModal, setShowContactModal] = useState<boolean>(false);
+  const [messageContent, setMessageContent] = useState<string>('');
+  const [sendingMessage, setSendingMessage] = useState<boolean>(false);
+  const [syncingWithAfalika, setSyncingWithAfalika] = useState<boolean>(false);
+  const [syncSuccess, setSyncSuccess] = useState<boolean>(false);
   
   useEffect(() => {
     const loadDelivery = async () => {
@@ -55,6 +72,175 @@ const DeliveryDetail: React.FC = () => {
     
     loadDelivery();
   }, [id]);
+
+  // Fonction pour accepter la livraison en un clic
+  const handleAcceptDelivery = async () => {
+    if (!id) return;
+    
+    // Demander confirmation
+    if (!window.confirm("Êtes-vous sûr de vouloir accepter cette demande de livraison ?")) {
+      return;
+    }
+
+    setAcceptLoading(true);
+    try {
+      const updatedDelivery = await acceptDeliverySimple(id);
+      if (updatedDelivery) {
+        setDelivery(adaptDeliveryData(updatedDelivery));
+        alert("La demande de livraison a été acceptée avec succès.");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Erreur lors de l'acceptation de la livraison: " + 
+        (error instanceof Error ? error.message : "Une erreur s'est produite"));
+    } finally {
+      setAcceptLoading(false);
+    }
+  };
+
+  // Fonction pour ouvrir le modal de refus
+  const handleOpenRejectModal = () => {
+    setShowRejectModal(true);
+  };
+
+  // Fonction pour gérer le changement de motif de refus
+  const handleReasonChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setRejectionReason(e.target.value);
+  };
+
+  // Fonction pour refuser la livraison
+  const handleRejectDelivery = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!id) return;
+
+    if (!rejectionReason.trim()) {
+      alert("Veuillez fournir un motif de refus.");
+      return;
+    }
+
+    setRejectLoading(true);
+    try {
+      const updatedDelivery = await rejectDelivery(id, { rejectionReason });
+      if (updatedDelivery) {
+        setDelivery(adaptDeliveryData(updatedDelivery));
+        setShowRejectModal(false);
+        setRejectionReason('');
+        alert("La demande de livraison a été refusée.");
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Erreur lors du refus de la livraison: " + 
+        (error instanceof Error ? error.message : "Une erreur s'est produite"));
+    } finally {
+      setRejectLoading(false);
+    }
+  };
+
+  // Fonction pour ouvrir le modal de contact
+  const handleOpenContactModal = () => {
+    setMessageContent(`Bonjour, concernant votre livraison ${delivery.trackingNumber || 'en cours'}...`);
+    setShowContactModal(true);
+  };
+
+  // Fonction pour envoyer un message et rediriger vers les communications
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    // Vérification plus complète de l'ID utilisateur avec message d'erreur
+    if (!delivery) {
+      alert("Erreur: Impossible d'accéder aux informations de livraison.");
+      return;
+    }
+    
+    if (!delivery.kabaUserId) {
+      alert("Erreur: Impossible d'identifier le client pour cette livraison.");
+      console.error("kabaUserId manquant dans les données de livraison:", delivery);
+      return;
+    }
+
+    if (!messageContent.trim()) {
+      alert("Veuillez saisir un message.");
+      return;
+    }
+
+    setSendingMessage(true);
+    try {
+      // Conversion explicite de l'ID en chaîne de caractères
+      const messageData = {
+        content: messageContent,
+        kabaUserId: String(delivery.kabaUserId),
+        isFromAdmin: true,
+        // Utiliser l'ID de livraison pour créer ou trouver une conversation spécifique à cette livraison
+        deliveryRequestId: delivery.id
+      };
+
+      console.log("Envoi du message avec les données:", messageData);
+      console.log("URL API appelée:", `${API_BASE_URL}/chat/messages`);
+      
+      // Appel de la fonction sendMessage importée
+      const result = await sendMessage(messageData);
+      console.log("Réponse du serveur:", result);
+      
+      setShowContactModal(false);
+      
+      // Délai court avant la redirection pour permettre à l'état de se mettre à jour
+      setTimeout(() => {
+        console.log("Redirection vers la page Communications");
+        // Rediriger vers la page Communications
+        navigate('/communications');
+      }, 100);
+    } catch (error) {
+      console.error("Erreur détaillée:", error);
+      // Essayer d'afficher plus de détails sur l'erreur
+      if (error instanceof Error) {
+        console.error("Message d'erreur:", error.message);
+        console.error("Stack trace:", error.stack);
+      }
+      
+      alert("Erreur lors de l'envoi du message: " + 
+        (error instanceof Error ? error.message : "Une erreur s'est produite"));
+    } finally {
+      setSendingMessage(false);
+    }
+  };
+
+  // Fonction pour synchroniser avec Afalika
+  const handleSyncWithAfalika = async () => {
+    if (!id) return;
+    
+    // Demander confirmation
+    if (!window.confirm("Êtes-vous sûr de vouloir synchroniser cette livraison avec Afalika ?")) {
+      return;
+    }
+
+    setSyncingWithAfalika(true);
+    setSyncSuccess(false);
+    try {
+      const result = await syncDeliveryWithAfalika(id);
+      if (result.success) {
+        setSyncSuccess(true);
+        alert("La livraison a été synchronisée avec Afalika avec succès.");
+        
+        // Recharger les données de la livraison pour voir les mises à jour
+        const updatedDelivery = await fetchDelivery(id);
+        if (updatedDelivery) {
+          setDelivery(adaptDeliveryData(updatedDelivery));
+        }
+      } else {
+        alert("Erreur lors de la synchronisation: " + result.message);
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Erreur lors de la synchronisation avec Afalika: " + 
+        (error instanceof Error ? error.message : "Une erreur s'est produite"));
+    } finally {
+      setSyncingWithAfalika(false);
+      // Masquer l'indicateur de succès après 3 secondes
+      if (syncSuccess) {
+        setTimeout(() => setSyncSuccess(false), 3000);
+      }
+    }
+  };
   
   if (loading) {
     return (
@@ -96,7 +282,8 @@ const DeliveryDetail: React.FC = () => {
     notes,
     productImage,
     purchaseConfirmationImage,
-    deliveryMethod
+    deliveryMethod,
+    cancellationReason
   } = delivery;
 
   // Dates formatées pour l'affichage
@@ -107,6 +294,9 @@ const DeliveryDetail: React.FC = () => {
 
   // Calcul des jours écoulés depuis la création
   const daysSinceCreation = Math.floor((new Date().getTime() - new Date(createdAt).getTime()) / (1000 * 60 * 60 * 24));
+
+  // Vérifier si la livraison a été annulée
+  const isDeliveryCancelled = status === 'cancelled';
 
   // Étapes de suivi
   const trackingSteps = [
@@ -145,16 +335,19 @@ const DeliveryDetail: React.FC = () => {
     }
   ];
 
+  // Déterminer si la livraison est en attente et peut être acceptée/refusée
+  const canManageDelivery = delivery.status === 'pending';
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* En-tête */}
       <header className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div className="flex items-center gap-4">
-        <button 
-          onClick={() => navigate('/deliveries')}
-            className="p-1.5 rounded-full hover:bg-gray-100 flex items-center justify-center"
-            aria-label="Retour"
-        >
+          <button 
+            onClick={() => navigate('/deliveries')}
+              className="p-1.5 rounded-full hover:bg-gray-100 flex items-center justify-center"
+              aria-label="Retour"
+          >
             <ArrowLeft size={20} className="text-gray-600" />
           </button>
           <div>
@@ -166,7 +359,76 @@ const DeliveryDetail: React.FC = () => {
           </div>
         </div>
         
-        <div className="flex space-x-2">
+        <div className="flex flex-wrap gap-2">
+          {canManageDelivery && (
+            <>
+              <button 
+                onClick={handleAcceptDelivery}
+                disabled={acceptLoading}
+                className="btn btn-primary flex items-center gap-1"
+              >
+                {acceptLoading ? (
+                  <div className="flex items-center gap-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white"></div>
+                    <span>Acceptation...</span>
+                  </div>
+                ) : (
+                  <>
+                    <Check size={18} />
+                    <span>Accepter</span>
+                  </>
+                )}
+              </button>
+              <button 
+                onClick={handleOpenRejectModal}
+                disabled={rejectLoading}
+                className="btn btn-outline btn-error flex items-center gap-1"
+              >
+                {rejectLoading ? (
+                  <div className="flex items-center gap-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-error-500"></div>
+                    <span>Refus...</span>
+                  </div>
+                ) : (
+                  <>
+                    <X size={18} />
+                    <span>Refuser</span>
+                  </>
+                )}
+              </button>
+            </>
+          )}
+          
+          {/* Bouton Contacter le client */}
+          <button 
+            onClick={handleOpenContactModal}
+            className="btn btn-secondary flex items-center gap-1"
+          >
+            <MessageCircle size={18} />
+            <span>Contacter le client</span>
+          </button>
+
+          {/* Bouton de synchronisation avec Afalika - affiché seulement pour certains statuts */}
+          {(status === 'accepted' || status === 'collected' || status === 'in-transit') && (
+            <button 
+              onClick={handleSyncWithAfalika}
+              disabled={syncingWithAfalika}
+              className={`btn ${syncSuccess ? 'btn-success' : 'btn-primary'} flex items-center gap-1`}
+            >
+              {syncingWithAfalika ? (
+                <div className="flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white"></div>
+                  <span>Synchronisation...</span>
+                </div>
+              ) : (
+                <>
+                  <RefreshCw size={18} className={syncSuccess ? 'animate-spin' : ''} />
+                  <span>{syncSuccess ? 'Synchronisé' : 'Synchroniser Afalika'}</span>
+                </>
+              )}
+            </button>
+          )}
+
           <button className="btn btn-outline flex items-center space-x-1">
             <Share2 size={16} />
             <span>Partager</span>
@@ -174,7 +436,7 @@ const DeliveryDetail: React.FC = () => {
           <button className="btn btn-outline flex items-center space-x-1">
             <Printer size={16} />
             <span>Imprimer</span>
-        </button>
+          </button>
         </div>
       </header>
       
@@ -273,6 +535,23 @@ const DeliveryDetail: React.FC = () => {
                   </div>
                 )}
               </div>
+              
+              {/* Afficher le motif d'annulation si la livraison est annulée */}
+              {isDeliveryCancelled && (
+                <div className="card border-none shadow-md bg-red-50 border-l-4 border-l-red-500 mb-6">
+                  <div className="flex items-center border-b pb-4 mb-4">
+                    <AlertCircle size={20} className="text-red-600 mr-2" />
+                    <h2 className="text-lg font-semibold text-red-700">Motif de refus</h2>
+                  </div>
+                  <div className="p-2">
+                    {cancellationReason ? (
+                      <p className="text-red-700">{cancellationReason}</p>
+                    ) : (
+                      <p className="text-red-500 italic">Aucun motif spécifié</p>
+                    )}
+                  </div>
+                </div>
+              )}
               
               <div className="card border-none shadow-md">
                 <div className="flex items-center border-b pb-4 mb-4">
@@ -542,6 +821,129 @@ const DeliveryDetail: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Modal de refus */}
+      {showRejectModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-auto overflow-hidden">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Refuser la demande</h2>
+                <button 
+                  onClick={() => setShowRejectModal(false)}
+                  className="text-gray-500 hover:text-gray-800"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <form onSubmit={handleRejectDelivery}>
+                <div className="space-y-4">
+                  <div>
+                    <label htmlFor="rejectionReason" className="block text-sm font-medium text-gray-700 mb-1">
+                      Motif du refus *
+                    </label>
+                    <textarea 
+                      id="rejectionReason"
+                      rows={5}
+                      placeholder="Veuillez indiquer la raison pour laquelle vous refusez cette demande..."
+                      required
+                      value={rejectionReason}
+                      onChange={handleReasonChange}
+                      className="input w-full h-auto"
+                    ></textarea>
+                    <p className="mt-1 text-sm text-gray-500">Ce message sera communiqué au client</p>
+                  </div>
+                </div>
+                
+                <div className="flex gap-3 mt-6">
+                  <button 
+                    type="button"
+                    onClick={() => setShowRejectModal(false)}
+                    className="btn btn-outline flex-1"
+                  >
+                    Annuler
+                  </button>
+                  
+                  <button 
+                    type="submit"
+                    className="btn btn-error flex-1 flex items-center justify-center"
+                    disabled={rejectLoading || !rejectionReason.trim()}
+                  >
+                    {rejectLoading ? (
+                      <span className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-white"></span>
+                    ) : (
+                      <>
+                        <X size={16} className="mr-2" />
+                        Refuser
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de contact client */}
+      {showContactModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900 bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 animate-fade-in-down">
+            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+              <MessageCircle size={20} className="text-secondary-600" />
+              Contacter le client
+            </h3>
+            
+            <form onSubmit={handleSendMessage}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Message
+                </label>
+                <textarea
+                  value={messageContent}
+                  onChange={(e) => setMessageContent(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-secondary-500"
+                  rows={5}
+                  placeholder="Saisissez votre message pour le client..."
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Ce message sera envoyé au client {delivery?.recipientName} et vous serez redirigé vers la conversation.
+                </p>
+              </div>
+              
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowContactModal(false)}
+                  className="btn btn-outline"
+                  disabled={sendingMessage}
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-secondary flex items-center gap-1"
+                  disabled={sendingMessage}
+                >
+                  {sendingMessage ? (
+                    <div className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-white"></div>
+                      <span>Envoi...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <MessageCircle size={18} />
+                      <span>Envoyer et accéder</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
